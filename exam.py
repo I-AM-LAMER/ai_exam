@@ -4,8 +4,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
+import cv2
+from torchvision.transforms.functional import to_pil_image
 import numpy as np
-from torchvision.models import mobilenet_v2
+from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
 import matplotlib.pyplot as plt
 from utils import (
     autocheck_model, 
@@ -26,6 +28,40 @@ STUDENT_ID = "03"  # Замените на ваш номер!
 # Модель для детекции объектов (Обязательно реализуйте вашу модель здесь)
 # ======================================================
 
+def draw_bbox(image_tensor, pred_box, true_box, title=""):
+    """
+    Рисует предсказанный и настоящий bbox на изображении.
+    Все боксы должны быть в формате [xc, yc, w, h], нормализованном (0–1).
+    """
+    image = image_tensor.cpu()
+    image = to_pil_image(image)
+    image = np.array(image)
+    h, w = image.shape[:2]
+
+    # Перевод в x1, y1, x2, y2
+    def convert(box):
+        xc, yc, bw, bh = box
+        x1 = int((xc - bw / 2) * w)
+        y1 = int((yc - bh / 2) * h)
+        x2 = int((xc + bw / 2) * w)
+        y2 = int((yc + bh / 2) * h)
+        return x1, y1, x2, y2
+
+    pred_rect = convert(pred_box)
+    true_rect = convert(true_box)
+
+    image = cv2.rectangle(image.copy(), pred_rect[:2], pred_rect[2:], (0, 255, 0), 2)
+    image = cv2.rectangle(image, true_rect[:2], true_rect[2:], (255, 0, 0), 2)
+
+    image = cv2.putText(image, "Pred", pred_rect[:2], cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+    image = cv2.putText(image, "True", true_rect[:2], cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+
+    plt.figure(figsize=(4, 4))
+    plt.imshow(image)
+    plt.title(title)
+    plt.axis('off')
+    plt.show()
+
 class BBoxRegressor(nn.Module):
     def __init__(self, architecture_name):
         """
@@ -45,7 +81,7 @@ class BBoxRegressor(nn.Module):
             # Например: использовать resnet18 из torchvision.models
             pass
         elif architecture_name == 'mobilenet_v2':
-            self.model = mobilenet_v2()
+            self.model = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
             self.backbone = self.model.features
             self.pool = nn.AdaptiveAvgPool2d((1, 1))
             self.in_features = self.model.last_channel
@@ -59,11 +95,10 @@ class BBoxRegressor(nn.Module):
         # Слои для предсказания bbox (x, y, w, h)
         self.bbox_head = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.in_features, 512),
+            nn.Linear(self.in_features, 128),
             nn.ReLU(),
-            nn.Linear(512, 128),
-            nn.ReLU(),
-            nn.Linear(128, 4)
+            nn.Linear(128, 4),
+            nn.Sigmoid()
         )
         
     def forward(self, x):
@@ -133,20 +168,31 @@ def train_model(model, train_loader, valid_loader, criterion, optimizer, num_epo
         model.eval()
         valid_loss = 0.0
         all_ious = []
-        
         with torch.no_grad():
+            best_iou = -1
+            best_example = None  # (image, pred_box, true_box)
+
             for images, targets in valid_loader:
                 images = images.to(device)
                 targets = targets.to(device)
                 outputs = model(images)
                 loss = criterion(outputs, targets)
                 valid_loss += loss.item() * images.size(0)
-                
-                ious = []
-                for pred, true in zip(outputs.cpu().numpy(), targets.cpu().numpy()):
+
+                for idx, (image_tensor, pred, true) in enumerate(zip(images.cpu(), outputs.cpu().numpy(), targets.cpu().numpy())):
                     iou = bbox_iou(pred, true)
-                    ious.append(iou)
-                all_ious.extend(ious)
+                    all_ious.append(iou)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_example = (image_tensor, pred, true)
+            if best_example:
+                image_tensor, pred_box, true_box = best_example
+                print(f"\n[Epoch {epoch+1}] Лучший IoU на валидации: {best_iou:.4f}")
+                print(f"Предсказанный bbox: {pred_box}")
+                print(f"Настоящий bbox: {true_box}")
+                draw_bbox(image_tensor, pred_box, true_box, title=f"Epoch {epoch+1} Best IoU: {best_iou:.4f}")
+
+
         valid_loss /= len(valid_loader.dataset)
         mean_iou = np.mean(all_ious)
         
@@ -218,7 +264,6 @@ def main():
     train_transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.Resize((224, 224)),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
     ])
