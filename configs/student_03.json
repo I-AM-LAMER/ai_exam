@@ -1,0 +1,6 @@
+{
+  "target_class": "10139",
+  "arch": "mobilenet_v2",
+  "seed": 4062,
+  "subset_url": "https://yourdomain.org/datasets/student_03.zip"
+}

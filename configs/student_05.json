@@ -1,0 +1,6 @@
+{
+  "target_class": "10313",
+  "arch": "resnet34",
+  "seed": 9874,
+  "subset_url": "https://yourdomain.org/datasets/student_05.zip"
+}

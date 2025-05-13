@@ -1,0 +1,6 @@
+{
+  "target_class": "10286",
+  "arch": "efficientnet_b0",
+  "seed": 8901,
+  "subset_url": "https://yourdomain.org/datasets/student_10.zip"
+}
